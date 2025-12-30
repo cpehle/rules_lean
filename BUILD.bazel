@@ -1,0 +1,8 @@
+"""rules_lean - Bazel rules for building Lean4 projects."""
+
+package(default_visibility = ["//visibility:public"])
+
+# Define the Lean4 toolchain type
+toolchain_type(
+    name = "toolchain_type",
+)

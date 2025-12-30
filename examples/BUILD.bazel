@@ -1,0 +1,126 @@
+"""Test examples for Lean Bazel rules."""
+
+load("//rules_lean:defs.bzl", "lean_binary", "lean_library", "lean_test")
+
+package(default_visibility = ["//visibility:public"])
+
+# Simple library test
+lean_library(
+    name = "hello_lib",
+    srcs = ["Hello.lean"],
+    module_name = "Hello",
+)
+
+# Native binary test
+lean_binary(
+    name = "hello",
+    srcs = ["Hello.lean"],
+)
+
+# Interpreter mode binary (for comparison)
+lean_binary(
+    name = "hello_interp",
+    srcs = ["Hello.lean"],
+    interpreter_mode = True,
+)
+
+# Test that runs the hello example
+lean_test(
+    name = "hello_test",
+    srcs = ["Hello.lean"],
+)
+
+# Multi-file example: library module
+lean_library(
+    name = "mylib",
+    srcs = ["Lib.lean"],
+    module_name = "Lib",
+)
+
+# Binary that depends on library
+lean_binary(
+    name = "main_with_lib",
+    srcs = ["Main.lean"],
+    deps = [":mylib"],
+)
+
+# Multi-file library with internal imports
+# Files must be listed in dependency order (Base before Extended before MultiLib)
+lean_library(
+    name = "multilib",
+    srcs = [
+        "MultiLib/Base.lean",
+        "MultiLib/Extended.lean",
+        "MultiLib.lean",
+    ],
+)
+
+# Binary using multi-file library
+lean_binary(
+    name = "use_multilib",
+    srcs = ["UseMultiLib.lean"],
+    deps = [":multilib"],
+)
+
+# ========================================
+# Chained library dependencies test
+# ========================================
+
+# Library A (no deps)
+lean_library(
+    name = "chain_a",
+    srcs = ["ChainA.lean"],
+)
+
+# Library B depends on A
+lean_library(
+    name = "chain_b",
+    srcs = ["ChainB.lean"],
+    deps = [":chain_a"],
+)
+
+# Library C depends on B (transitively A)
+lean_library(
+    name = "chain_c",
+    srcs = ["ChainC.lean"],
+    deps = [":chain_b"],
+)
+
+# Binary using the chain
+lean_binary(
+    name = "use_chain",
+    srcs = ["UseChain.lean"],
+    deps = [":chain_c"],
+)
+
+# ========================================
+# FFI test - calling C functions from Lean
+# ========================================
+
+cc_library(
+    name = "myffi",
+    srcs = ["ffi/myffi.c"],
+    hdrs = ["ffi/myffi.h"],
+)
+
+lean_binary(
+    name = "ffi_test",
+    srcs = ["ffi/FFITest.lean"],
+    cc_deps = [":myffi"],
+)
+
+# ========================================
+# Static and shared library test
+# ========================================
+# lean_library produces both static (.a) and shared (.so/.dylib)
+# libraries automatically, like cc_library.
+
+lean_library(
+    name = "mystaticlib",
+    srcs = ["StaticLib.lean"],
+)
+
+lean_library(
+    name = "mysharedlib",
+    srcs = ["SharedLib.lean"],
+)
