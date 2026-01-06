@@ -177,92 +177,101 @@ set -e
 export LEAN_PATH="{lean_path}"
 LEAN="$1"
 
-# Use temp files for mappings
-OLEAN_MAP=$(mktemp)
-DEPS_MAP=$(mktemp)
-COMPILED_LIST=$(mktemp)
-FILES_TMP=$(mktemp)
-trap "rm -f $OLEAN_MAP $DEPS_MAP $COMPILED_LIST $FILES_TMP" EXIT
-
 # File info: src_path|rel_path|module_name|olean|ilean|c_file
-cat > "$FILES_TMP" <<'FILELIST'
-{file_entries}
-FILELIST
+FILES='{file_entries}'
 
 # Create directory structure and copy source files
-while IFS='|' read -r src rel mod olean ilean cfile; do
+echo "$FILES" | while IFS='|' read -r src rel mod olean ilean cfile; do
     [ -z "$src" ] && continue
     dir=$(dirname "$rel")
-    if [ "$dir" != "." ]; then
-        mkdir -p "$dir"
-    fi
+    [ "$dir" != "." ] && mkdir -p "$dir"
     cp -L "$src" "$rel"
-    rel_base="${{rel%.lean}}"
-    echo "$rel_base.olean|$rel" >> "$OLEAN_MAP"
-done < "$FILES_TMP"
-
-# Use lean --deps to get actual dependencies for each file
-OUTPUT_DIR=$(echo "$LEAN_PATH" | cut -d: -f1)
-while IFS='|' read -r src rel mod olean ilean cfile; do
-    [ -z "$src" ] && continue
-    deps=$("$LEAN" --deps "$rel" 2>/dev/null | while read -r dep_olean; do
-        if [ -n "$OUTPUT_DIR" ] && echo "$dep_olean" | grep -qF "$OUTPUT_DIR/"; then
-            mod_olean=$(echo "$dep_olean" | sed "s|^$OUTPUT_DIR/||")
-        else
-            continue
-        fi
-        match=$(grep -F "$mod_olean|" "$OLEAN_MAP" 2>/dev/null | head -1)
-        if [ -n "$match" ]; then
-            echo "$match" | cut -d'|' -f2
-        fi
-    done | tr '\\n' ' ')
-    echo "$rel|$deps" >> "$DEPS_MAP"
-done < "$FILES_TMP"
-
-# Topological sort: compile files whose deps are all done
-TOTAL=$(grep -c . "$FILES_TMP" || echo 0)
-DONE=0
-
-while [ $DONE -lt $TOTAL ]; do
-    PROGRESS=0
-    while IFS='|' read -r src rel mod olean ilean cfile; do
-        [ -z "$src" ] && continue
-        if grep -Fxq "$rel" "$COMPILED_LIST" 2>/dev/null; then
-            continue
-        fi
-        deps=$(grep -F "$rel|" "$DEPS_MAP" | head -1 | cut -d'|' -f2)
-        CAN_COMPILE=1
-        for dep in $deps; do
-            [ -z "$dep" ] && continue
-            if ! grep -Fxq "$dep" "$COMPILED_LIST" 2>/dev/null; then
-                CAN_COMPILE=0
-                break
-            fi
-        done
-        if [ $CAN_COMPILE -eq 1 ]; then
-            echo "Compiling $rel..."
-            "$LEAN" -o "$olean" -i "$ilean" -c "$cfile" "$rel"
-            echo "$rel" >> "$COMPILED_LIST"
-            DONE=$((DONE + 1))
-            PROGRESS=$((PROGRESS + 1))
-        fi
-    done < "$FILES_TMP"
-
-    if [ $PROGRESS -eq 0 ] && [ $DONE -lt $TOTAL ]; then
-        echo "Warning: possible dependency cycle, compiling remaining files"
-        while IFS='|' read -r src rel mod olean ilean cfile; do
-            [ -z "$src" ] && continue
-            if ! grep -Fxq "$rel" "$COMPILED_LIST" 2>/dev/null; then
-                echo "Compiling $rel (forced)..."
-                "$LEAN" -o "$olean" -i "$ilean" -c "$cfile" "$rel"
-                echo "$rel" >> "$COMPILED_LIST"
-                DONE=$((DONE + 1))
-            fi
-        done < "$FILES_TMP"
-    fi
 done
 
-echo "Compiled $TOTAL files"
+# Python script handles dependency resolution and topological sort
+OUTPUT_DIR=$(echo "$LEAN_PATH" | cut -d: -f1)
+
+SORTED=$(python3 - "$LEAN" "$OUTPUT_DIR" "$FILES" << 'PYTHON_SCRIPT'
+import sys
+import subprocess
+import os
+
+lean_cmd = sys.argv[1]
+output_dir = sys.argv[2]
+files_str = sys.argv[3]
+
+# Parse file entries
+files = {{}}  # rel_path -> (olean, ilean, cfile)
+for line in files_str.strip().split("\\n"):
+    if not line.strip():
+        continue
+    parts = line.split("|")
+    if len(parts) >= 6:
+        src, rel, mod, olean, ilean, cfile = parts[:6]
+        files[rel] = (olean, ilean, cfile)
+
+# Get dependencies using lean --deps
+deps = {{}}  # rel_path -> [dep_rel_paths]
+for rel in files:
+    deps[rel] = []
+    try:
+        result = subprocess.run(
+            [lean_cmd, "--deps", rel],
+            capture_output=True, text=True, timeout=30
+        )
+        for line in result.stdout.strip().split("\\n"):
+            dep_olean = line.strip()
+            if not dep_olean or not output_dir:
+                continue
+            # Check if this is an internal dependency
+            if dep_olean.startswith(output_dir + "/"):
+                # Convert olean path back to rel_path
+                mod_olean = dep_olean[len(output_dir)+1:]
+                # Find matching source file
+                for other_rel in files:
+                    other_base = other_rel[:-5] if other_rel.endswith(".lean") else other_rel
+                    if mod_olean == other_base + ".olean":
+                        deps[rel].append(other_rel)
+                        break
+    except Exception as e:
+        print(f"Warning: failed to get deps for {{rel}}: {{e}}", file=sys.stderr)
+
+# Topological sort
+result = []
+visited = set()
+in_stack = set()
+
+def visit(node):
+    if node in visited:
+        return
+    if node in in_stack:
+        print(f"Warning: cycle detected at {{node}}", file=sys.stderr)
+        return
+    in_stack.add(node)
+    for dep in deps.get(node, []):
+        visit(dep)
+    in_stack.remove(node)
+    visited.add(node)
+    result.append(node)
+
+for f in files:
+    visit(f)
+
+# Output sorted files with their output paths
+for rel in result:
+    olean, ilean, cfile = files[rel]
+    print(f"{{rel}}|{{olean}}|{{ilean}}|{{cfile}}")
+PYTHON_SCRIPT
+)
+
+# Compile files in topologically sorted order
+echo "$SORTED" | while IFS='|' read -r rel olean ilean cfile; do
+    [ -z "$rel" ] && continue
+    echo "Compiling $rel..."
+    "$LEAN" -o "$olean" -i "$ilean" -c "$cfile" "$rel"
+done
+
+echo "Compiled $(echo "$FILES" | grep -c '|' || echo 0) files"
 '''.format(
         lean_path = lean_path_str,
         file_entries = "\n".join(file_entries),
@@ -303,53 +312,42 @@ echo "Compiled $TOTAL files"
     need_shared = True
     need_pic = need_shared
 
-    if leanc:
-        for src, rel_path, olean, ilean, c_file in file_info:
-            rel_base = rel_path[:-5] if rel_path.endswith(".lean") else rel_path
+    # Use Bazel CC toolchain for compiling C files (supports cross-compilation)
+    cc_toolchain = ctx.attr._cc_toolchain[cc_common.CcToolchainInfo]
+    feature_configuration = cc_common.configure_features(
+        ctx = ctx,
+        cc_toolchain = cc_toolchain,
+    )
 
-            # Regular object file
-            o_file = ctx.actions.declare_file(rel_base + ".o")
-            o_files.append(o_file)
+    # Prepare include flags for lean.h
+    include_flags = []
+    if lean_include_path:
+        include_flags.append("-isystem")
+        include_flags.append(lean_include_path)
+    else:
+        # Debug: print warning if include path is not set
+        print("WARNING: lean_include_path is not set in Lean toolchain")
 
-            cc_wrapper = ctx.actions.declare_file(rel_base.replace("/", "_") + "_cc.sh")
-            include_flag = '-I"{}"'.format(lean_include_path) if lean_include_path else ""
-            cc_wrapper_content = """#!/bin/bash
-set -e
-"$1" {include_flag} -c -o "$2" "$3"
-""".format(include_flag = include_flag)
-            ctx.actions.write(output = cc_wrapper, content = cc_wrapper_content, is_executable = True)
+    for src, rel_path, olean, ilean, c_file in file_info:
+        rel_base = rel_path[:-5] if rel_path.endswith(".lean") else rel_path
 
-            ctx.actions.run(
-                outputs = [o_file],
-                inputs = [c_file, cc_wrapper] + list(lean_headers),
-                executable = cc_wrapper,
-                arguments = [leanc.path, o_file.path, c_file.path],
-                mnemonic = "LeanCompileC",
-                progress_message = "Compiling C for %s" % rel_path,
-                tools = [leanc],
-            )
+        # Use cc_common.compile() for cross-compilation support
+        (compilation_context, compilation_outputs) = cc_common.compile(
+            name = ctx.label.name + "_" + rel_base.replace("/", "_"),
+            actions = ctx.actions,
+            feature_configuration = feature_configuration,
+            cc_toolchain = cc_toolchain,
+            srcs = [c_file],
+            private_hdrs = list(lean_headers),
+            user_compile_flags = include_flags + ctx.attr.copts,
+        )
 
-            # PIC object file (for shared library)
-            if need_pic:
-                pic_o_file = ctx.actions.declare_file(rel_base + ".pic.o")
-                pic_o_files.append(pic_o_file)
-
-                pic_cc_wrapper = ctx.actions.declare_file(rel_base.replace("/", "_") + "_cc_pic.sh")
-                pic_cc_wrapper_content = """#!/bin/bash
-set -e
-"$1" {include_flag} -fPIC -c -o "$2" "$3"
-""".format(include_flag = include_flag)
-                ctx.actions.write(output = pic_cc_wrapper, content = pic_cc_wrapper_content, is_executable = True)
-
-                ctx.actions.run(
-                    outputs = [pic_o_file],
-                    inputs = [c_file, pic_cc_wrapper] + list(lean_headers),
-                    executable = pic_cc_wrapper,
-                    arguments = [leanc.path, pic_o_file.path, c_file.path],
-                    mnemonic = "LeanCompilePIC",
-                    progress_message = "Compiling PIC for %s" % rel_path,
-                    tools = [leanc],
-                )
+        # Collect object files
+        for obj in compilation_outputs.objects:
+            o_files.append(obj)
+        if need_pic:
+            for pic_obj in compilation_outputs.pic_objects:
+                pic_o_files.append(pic_obj)
 
     # Build output file list
     output_files = olean_files + c_files + o_files
@@ -369,36 +367,46 @@ set -e
         ),
     ]
 
-    # Create static library if requested
+    # Create static library if we have object files
     static_lib = None
-    if need_static and leanc:
+    if need_static and o_files:
         static_lib = ctx.actions.declare_file("lib" + ctx.label.name + ".a")
         output_files.append(static_lib)
 
         # Collect all objects including from deps
         all_objects = o_files + depset(transitive = transitive_objects).to_list()
 
-        ar_wrapper = ctx.actions.declare_file(ctx.label.name + "_ar.sh")
-        ar_wrapper_content = """#!/bin/bash
-set -e
-OUTPUT="$1"
-shift
-ar rcs "$OUTPUT" "$@"
-"""
-        ctx.actions.write(output = ar_wrapper, content = ar_wrapper_content, is_executable = True)
+        # Get ar tool from toolchain
+        ar_executable = cc_toolchain.ar_executable
+
+        # Use ar to create static library
+        # Note: on macOS, ar_executable may be libtool which needs different flags
+        ar_args = ctx.actions.args()
+        is_macos = ctx.target_platform_has_constraint(ctx.attr._macos_constraint[platform_common.ConstraintValueInfo])
+        if is_macos:
+            # macOS libtool syntax: libtool -static -o output.a input.o...
+            ar_args.add("-static")
+            ar_args.add("-o")
+            ar_args.add(static_lib)
+            ar_args.add_all(all_objects)
+        else:
+            # Standard ar syntax: ar rcs output.a input.o...
+            ar_args.add("rcs")
+            ar_args.add(static_lib)
+            ar_args.add_all(all_objects)
 
         ctx.actions.run(
             outputs = [static_lib],
-            inputs = [ar_wrapper] + all_objects,
-            executable = ar_wrapper,
-            arguments = [static_lib.path] + [o.path for o in all_objects],
+            inputs = depset(all_objects, transitive = [cc_toolchain.all_files]),
+            executable = ar_executable,
+            arguments = [ar_args],
             mnemonic = "LeanArchive",
             progress_message = "Creating static library %s" % static_lib.basename,
         )
 
-    # Create shared library if requested
+    # Create shared library if requested (requires leanc, skipped for cross-compilation)
     shared_lib = None
-    if need_shared and leanc:
+    if need_shared and leanc and pic_o_files:
         # Determine shared library extension and flags based on platform
         if ctx.target_platform_has_constraint(ctx.attr._macos_constraint[platform_common.ConstraintValueInfo]):
             shared_ext = ".dylib"
@@ -454,12 +462,6 @@ shift 2
 
     # Add CcInfo if we created a static or shared library
     if static_lib or shared_lib:
-        cc_toolchain = ctx.attr._cc_toolchain[cc_common.CcToolchainInfo]
-        feature_configuration = cc_common.configure_features(
-            ctx = ctx,
-            cc_toolchain = cc_toolchain,
-        )
-
         libraries_to_link = []
         if static_lib:
             libraries_to_link.append(cc_common.create_library_to_link(
@@ -687,22 +689,61 @@ set -e
             tools = [leanc],
         )
 
-        # Link all objects together
+        # Link all objects together using the C++ compiler (not leanc)
+        # This avoids leanc's @rpath issues with libleanshared.dylib
         link_wrapper = ctx.actions.declare_file(base_name + "_link.sh")
 
         # Collect all object files
         dep_objects = depset(transitive = all_objects).to_list()
         all_obj_paths = [main_o.path] + [o.path for o in dep_objects]
+
+        # Get the Lean runtime library from the toolchain via CcInfo
+        runtime = getattr(toolchain, "runtime", None)
+        lean_lib_dir = ""
+
+        # Extract runtime libraries from CcInfo (includes cc_import shared libs)
+        lean_dylib = None
+        if runtime and CcInfo in runtime:
+            cc_info = runtime[CcInfo]
+            for linker_input in cc_info.linking_context.linker_inputs.to_list():
+                for lib in linker_input.libraries:
+                    if lib.dynamic_library:
+                        lean_lib_dir = lib.dynamic_library.dirname
+                        lean_dylib = lib.dynamic_library
+                        # Add runtime library to cc_libs for linking
+                        cc_libs.append(lib.dynamic_library)
+                    elif lib.static_library:
+                        cc_libs.append(lib.static_library)
+
+        # Now compute cc_lib_paths after adding runtime
         cc_lib_paths = [lib.path for lib in cc_libs]
 
-        # Build link command
+        # Determine platform-specific rpath flag
+        # Use @loader_path for macOS to make the path relative to the binary
+        is_macos = ctx.target_platform_has_constraint(ctx.attr._macos_constraint[platform_common.ConstraintValueInfo])
+        if lean_lib_dir and lean_dylib:
+            # Calculate relative path from binary to library
+            # Binary is at: bazel-out/.../bin/magic_lean/magic_ffi_test
+            # Library is at: bazel-out/.../bin/_solib_.../libleanshared.dylib
+            # We need to go up from magic_lean to bin, then into _solib_...
+            if is_macos:
+                # @loader_path is where the binary is, go up to bin then to _solib_...
+                rpath_flag = "-Wl,-rpath,@loader_path/../" + "/".join(lean_lib_dir.split("/")[-2:])
+            else:
+                rpath_flag = "-Wl,-rpath,$ORIGIN/../" + "/".join(lean_lib_dir.split("/")[-2:])
+        else:
+            rpath_flag = ""
+
+        # Build link command using clang/cc instead of leanc
+        # cc_libs already includes the Lean runtime (collected via CcInfo)
         link_wrapper_content = """#!/bin/bash
 set -e
-"$1" -o "$2" {objects} {cc_libs} {linker_flags} {user_linkopts}
+clang++ -o "$1" {objects} {cc_libs} {linker_flags} {rpath_flag} {user_linkopts}
 """.format(
             objects = " ".join(all_obj_paths),
             cc_libs = " ".join(cc_lib_paths),
             linker_flags = " ".join(linker_flags),
+            rpath_flag = rpath_flag,
             user_linkopts = " ".join(ctx.attr.linkopts),
         )
         ctx.actions.write(
@@ -718,10 +759,9 @@ set -e
                 transitive = all_objects,
             ),
             executable = link_wrapper,
-            arguments = [leanc.path, output.path],
+            arguments = [output.path],
             mnemonic = "LeanLink",
             progress_message = "Linking Lean binary %s" % ctx.label.name,
-            tools = [leanc],
         )
     else:
         # Fallback: interpreter mode using --run
@@ -807,9 +847,13 @@ lean_binary = rule(
             doc = "Run in interpreter mode (--run) instead of native compilation",
             default = False,
         ),
+        "_macos_constraint": attr.label(
+            default = "@platforms//os:macos",
+        ),
     },
     executable = True,
     toolchains = ["//rules_lean:toolchain_type"],
+    fragments = ["cpp"],
 )
 
 def _lean_test_impl(ctx):

@@ -72,9 +72,12 @@ def _lean_release_impl(repository_ctx):
 
     repository_ctx.download_and_extract(**download_kwargs)
 
+    # Detect platform-specific library extension
+    is_macos = "darwin" in platform
+
     # Create BUILD file exposing the toolchain components
-    repository_ctx.file("BUILD.bazel", """
-load("@rules_cc//cc:defs.bzl", "cc_import")
+    build_content = """
+load("@rules_cc//cc:defs.bzl", "cc_import", "cc_library")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -107,15 +110,71 @@ filegroup(
     name = "lib_lean",
     srcs = glob(["lib/lean/**"]),
 )
+"""
 
-# Runtime library (may not exist on all platforms)
+    if is_macos:
+        build_content += """
+# Import the Lean shared runtime library (macOS)
+cc_import(
+    name = "leanshared",
+    shared_library = "lib/lean/libleanshared.dylib",
+)
+
+# Import the Lean static runtime library (macOS)
+cc_import(
+    name = "leanrt_static",
+    static_library = "lib/lean/libleanrt.a",
+)
+
+# Combined runtime with headers
 cc_library(
     name = "leanrt",
-    srcs = glob(["lib/lean/libleanrt.*", "lib/lean/libleanshared.*"], allow_empty = True),
     hdrs = glob(["include/**/*.h"], allow_empty = True),
     includes = ["include"],
+    deps = [":leanshared"],
 )
-""")
+
+# Static-only variant for when dynamic linking isn't desired
+cc_library(
+    name = "leanrt_static_full",
+    hdrs = glob(["include/**/*.h"], allow_empty = True),
+    includes = ["include"],
+    deps = [":leanrt_static"],
+)
+"""
+    else:
+        # Linux
+        build_content += """
+# Import the Lean shared runtime library (Linux)
+cc_import(
+    name = "leanshared",
+    shared_library = "lib/lean/libleanshared.so",
+)
+
+# Import the Lean static runtime library (Linux)
+cc_import(
+    name = "leanrt_static",
+    static_library = "lib/lean/libleanrt.a",
+)
+
+# Combined runtime with headers
+cc_library(
+    name = "leanrt",
+    hdrs = glob(["include/**/*.h"], allow_empty = True),
+    includes = ["include"],
+    deps = [":leanshared"],
+)
+
+# Static-only variant for when dynamic linking isn't desired
+cc_library(
+    name = "leanrt_static_full",
+    hdrs = glob(["include/**/*.h"], allow_empty = True),
+    includes = ["include"],
+    deps = [":leanrt_static"],
+)
+"""
+
+    repository_ctx.file("BUILD.bazel", build_content)
 
 lean_release = repository_rule(
     implementation = _lean_release_impl,
