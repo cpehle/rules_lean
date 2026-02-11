@@ -91,7 +91,7 @@ def _lean_library_impl(ctx):
     Uses 'lean --deps' for automatic dependency analysis and compiles files
     in topological order. Source files can be listed in any order.
     """
-    toolchain = ctx.toolchains["//rules_lean:toolchain_type"]
+    toolchain = ctx.toolchains["//:toolchain_type"]
     lean = toolchain.lean
     leanc = getattr(toolchain, "leanc", None)
 
@@ -544,7 +544,7 @@ lean_library = rule(
         ),
     },
     toolchains = [
-        "//rules_lean:toolchain_type",
+        "//:toolchain_type",
         "@bazel_tools//tools/cpp:toolchain_type",
     ],
     fragments = ["cpp"],
@@ -558,7 +558,7 @@ def _lean_binary_impl(ctx):
     - Links against dependencies (both Lean and C/C++)
     - Uses linkstatic to control static vs dynamic linking
     """
-    toolchain = ctx.toolchains["//rules_lean:toolchain_type"]
+    toolchain = ctx.toolchains["//:toolchain_type"]
     lean = toolchain.lean
     leanc = getattr(toolchain, "leanc", None)
     lib_lean_path = getattr(toolchain, "lib_lean_path", "")
@@ -852,14 +852,14 @@ lean_binary = rule(
         ),
     },
     executable = True,
-    toolchains = ["//rules_lean:toolchain_type"],
+    toolchains = ["//:toolchain_type"],
     fragments = ["cpp"],
 )
 
 def _lean_test_impl(ctx):
     """Implementation of lean_test rule."""
     # Tests are essentially binaries that we run
-    toolchain = ctx.toolchains["//rules_lean:toolchain_type"]
+    toolchain = ctx.toolchains["//:toolchain_type"]
     lean = toolchain.lean
 
     # Create a test script that runs the lean file
@@ -925,7 +925,7 @@ lean_test = rule(
         ),
     },
     test = True,
-    toolchains = ["//rules_lean:toolchain_type"],
+    toolchains = ["//:toolchain_type"],
 )
 
 # =============================================================================

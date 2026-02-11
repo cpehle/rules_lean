@@ -1,6 +1,6 @@
 """Lean toolchain definitions for downloaded releases."""
 
-load("//rules_lean:defs.bzl", "lean_toolchain")
+load("//:defs.bzl", "lean_toolchain")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -39,7 +39,7 @@ toolchain(
         "@platforms//cpu:arm64",
     ],
     toolchain = ":lean_toolchain_impl",
-    toolchain_type = "//rules_lean:toolchain_type",
+    toolchain_type = "//:toolchain_type",
 )
 
 # Register for macOS x86_64
@@ -50,7 +50,7 @@ toolchain(
         "@platforms//cpu:x86_64",
     ],
     toolchain = ":lean_toolchain_impl",
-    toolchain_type = "//rules_lean:toolchain_type",
+    toolchain_type = "//:toolchain_type",
 )
 
 # Register for Linux x86_64
@@ -61,7 +61,7 @@ toolchain(
         "@platforms//cpu:x86_64",
     ],
     toolchain = ":lean_toolchain_impl",
-    toolchain_type = "//rules_lean:toolchain_type",
+    toolchain_type = "//:toolchain_type",
 )
 
 # Register for Linux ARM64
@@ -72,5 +72,5 @@ toolchain(
         "@platforms//cpu:arm64",
     ],
     toolchain = ":lean_toolchain_impl",
-    toolchain_type = "//rules_lean:toolchain_type",
+    toolchain_type = "//:toolchain_type",
 )
