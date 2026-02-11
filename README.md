@@ -7,18 +7,18 @@ Bazel rules for building Lean 4 projects.
 Add to your `MODULE.bazel`:
 
 ```python
-# Download Lean release
-lean_release = use_repo_rule("//rules_lean:extensions.bzl", "lean_release")
-lean_release(
-    name = "lean_release",
-    version = "4.26.0",
-)
+bazel_dep(name = "rules_lean", version = "0.1.0")
 
-# Register toolchains
-register_toolchains("//rules_lean/toolchain:lean_toolchain_macos_arm64")
-register_toolchains("//rules_lean/toolchain:lean_toolchain_macos_x86_64")
-register_toolchains("//rules_lean/toolchain:lean_toolchain_linux_x86_64")
-register_toolchains("//rules_lean/toolchain:lean_toolchain_linux_arm64")
+lean = use_extension("@rules_lean//:extensions.bzl", "lean")
+lean.release(name = "lean_release", version = "4.26.0")
+use_repo(lean, "lean_release")
+
+register_toolchains(
+    "@rules_lean//toolchain:lean_toolchain_macos_arm64",
+    "@rules_lean//toolchain:lean_toolchain_macos_x86_64",
+    "@rules_lean//toolchain:lean_toolchain_linux_x86_64",
+    "@rules_lean//toolchain:lean_toolchain_linux_arm64",
+)
 ```
 
 ## Rules
@@ -28,7 +28,7 @@ register_toolchains("//rules_lean/toolchain:lean_toolchain_linux_arm64")
 Compiles Lean source files into a library with `.olean` files and static/shared libraries.
 
 ```python
-load("//rules_lean:defs.bzl", "lean_library")
+load("@rules_lean//:defs.bzl", "lean_library")
 
 lean_library(
     name = "mylib",
@@ -63,7 +63,7 @@ lean_library(
 Builds a native executable from Lean source files.
 
 ```python
-load("//rules_lean:defs.bzl", "lean_binary")
+load("@rules_lean//:defs.bzl", "lean_binary")
 
 lean_binary(
     name = "hello",
@@ -99,7 +99,7 @@ lean_binary(
 Runs Lean files as tests.
 
 ```python
-load("//rules_lean:defs.bzl", "lean_test")
+load("@rules_lean//:defs.bzl", "lean_test")
 
 lean_test(
     name = "mytest",
@@ -113,6 +113,8 @@ lean_test(
 Call C functions from Lean using `@[extern]`:
 
 ```python
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
 cc_library(
     name = "myffi",
     srcs = ["ffi.c"],
@@ -142,8 +144,11 @@ def main : IO Unit := do
 Uses pre-built Lean release with compiled stdlib:
 
 ```python
-lean_release(name = "lean_release", version = "4.26.0")
-register_toolchains("//rules_lean/toolchain:lean_toolchain_macos_arm64")
+lean = use_extension("@rules_lean//:extensions.bzl", "lean")
+lean.release(name = "lean_release", version = "4.26.0")
+use_repo(lean, "lean_release")
+
+register_toolchains("@rules_lean//toolchain:lean_toolchain_macos_arm64")
 ```
 
 ### Custom Toolchain
@@ -151,13 +156,14 @@ register_toolchains("//rules_lean/toolchain:lean_toolchain_macos_arm64")
 Define a custom toolchain:
 
 ```python
-load("//rules_lean:defs.bzl", "lean_toolchain")
+load("@rules_lean//:defs.bzl", "lean_toolchain")
 
 lean_toolchain(
     name = "my_toolchain_impl",
     lean = "@my_lean//:lean",
     leanc = "@my_lean//:leanc",
     stdlib_oleans = ["@my_lean//:stdlib_oleans"],
+    lib_lean = "@my_lean//:lib_lean",
     runtime = "@my_lean//:leanrt",
     linker_flags = select({
         "@platforms//os:macos": ["-lc++"],
@@ -168,7 +174,7 @@ lean_toolchain(
 toolchain(
     name = "my_toolchain",
     toolchain = ":my_toolchain_impl",
-    toolchain_type = "//rules_lean:toolchain_type",
+    toolchain_type = "@rules_lean//:toolchain_type",
 )
 ```
 
@@ -177,7 +183,7 @@ toolchain(
 Use `lean_stdlib_library` which automatically applies the stage0 toolchain:
 
 ```python
-load("//rules_lean:defs.bzl", "lean_stdlib_library")
+load("@rules_lean//:defs.bzl", "lean_stdlib_library")
 
 lean_stdlib_library(
     name = "Init",
@@ -191,10 +197,10 @@ lean_stdlib_library(
 See `examples/` directory for working examples:
 
 ```bash
-bazel build //rules_lean/examples:hello
-bazel run //rules_lean/examples:hello
+bazel build //examples:hello
+bazel run //examples:hello
 
-bazel build //rules_lean/examples:use_chain    # Chained library deps
-bazel build //rules_lean/examples:ffi_test     # FFI example
-bazel test //rules_lean/examples:hello_test    # Test example
+bazel build //examples:use_chain    # Chained library deps
+bazel build //examples:ffi_test     # FFI example
+bazel test //examples:hello_test    # Test example
 ```

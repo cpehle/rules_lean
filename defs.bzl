@@ -9,6 +9,9 @@ Similar to rules_rust, these rules provide:
 - lean_module: Compile a single .lean file (for fine-grained deps)
 """
 
+load("@rules_cc//cc:defs.bzl", "CcInfo", "cc_common")
+load("@rules_cc//cc:find_cc_toolchain.bzl", "find_cc_toolchain", "use_cc_toolchain")
+
 # Provider for Lean4 compilation artifacts
 LeanInfo = provider(
     doc = "Information about compiled Lean4 modules",
@@ -37,11 +40,21 @@ def _lean_toolchain_impl(ctx):
                 lean_include_path = f.dirname[:-5] if f.dirname.endswith("/lean") else f.dirname
                 break
 
+    # Derive lib_lean_path from lib_lean files (works with bzlmod canonical repo names)
+    lib_lean_path = ""
+    if ctx.files.lib_lean:
+        for f in ctx.files.lib_lean:
+            idx = f.path.find("/lib/lean/")
+            if idx >= 0:
+                lib_lean_path = f.path[:idx] + "/lib/lean"
+                break
+
     return [platform_common.ToolchainInfo(
-        lean = ctx.executable.lean,
-        leanc = ctx.executable.leanc if ctx.attr.leanc else None,
+        lean = ctx.file.lean,
+        leanc = ctx.file.leanc if ctx.attr.leanc else None,
         stdlib_oleans = ctx.files.stdlib_oleans,
-        lib_lean_path = ctx.attr.lib_lean_path,
+        lib_lean_files = ctx.files.lib_lean,
+        lib_lean_path = lib_lean_path,
         lean_include_path = lean_include_path,
         lean_headers = ctx.files.lean_headers,
         runtime = ctx.attr.runtime,
@@ -53,22 +66,22 @@ lean_toolchain = rule(
     attrs = {
         "lean": attr.label(
             doc = "The lean compiler executable",
-            executable = True,
+            allow_single_file = True,
             cfg = "exec",
             mandatory = True,
         ),
         "leanc": attr.label(
             doc = "The leanc C wrapper (optional)",
-            executable = True,
+            allow_single_file = True,
             cfg = "exec",
         ),
         "stdlib_oleans": attr.label_list(
             doc = "Standard library .olean files",
             allow_files = True,
         ),
-        "lib_lean_path": attr.string(
-            doc = "Path to lib/lean directory for LEAN_PATH",
-            default = "",
+        "lib_lean": attr.label(
+            doc = "Label for lib/lean directory files (used to derive LEAN_PATH)",
+            allow_files = True,
         ),
         "lean_headers": attr.label_list(
             doc = "Lean header files for C compilation (lean.h, config.h, etc.)",
@@ -96,6 +109,7 @@ def _lean_library_impl(ctx):
     leanc = getattr(toolchain, "leanc", None)
 
     stdlib_oleans = getattr(toolchain, "stdlib_oleans", [])
+    lib_lean_files = getattr(toolchain, "lib_lean_files", stdlib_oleans)
     lib_lean_path = getattr(toolchain, "lib_lean_path", "")
 
     # Collect transitive deps
@@ -288,7 +302,7 @@ echo "Compiled $(echo "$FILES" | grep -c '|' || echo 0) files"
     ctx.actions.run(
         outputs = all_outputs,
         inputs = depset(
-            direct = ctx.files.srcs + [wrapper] + list(stdlib_oleans),
+            direct = ctx.files.srcs + [wrapper] + list(lib_lean_files),
             transitive = transitive_oleans,
         ),
         executable = wrapper,
@@ -313,7 +327,7 @@ echo "Compiled $(echo "$FILES" | grep -c '|' || echo 0) files"
     need_pic = need_shared
 
     # Use Bazel CC toolchain for compiling C files (supports cross-compilation)
-    cc_toolchain = ctx.attr._cc_toolchain[cc_common.CcToolchainInfo]
+    cc_toolchain = find_cc_toolchain(ctx)
     feature_configuration = cc_common.configure_features(
         ctx = ctx,
         cc_toolchain = cc_toolchain,
@@ -536,17 +550,13 @@ lean_library = rule(
             doc = "Prefer static linking when this library is consumed (like cc_library)",
             default = True,
         ),
-        "_cc_toolchain": attr.label(
-            default = "@bazel_tools//tools/cpp:current_cc_toolchain",
-        ),
         "_macos_constraint": attr.label(
             default = "@platforms//os:macos",
         ),
     },
     toolchains = [
         "//:toolchain_type",
-        "@bazel_tools//tools/cpp:toolchain_type",
-    ],
+    ] + use_cc_toolchain(),
     fragments = ["cpp"],
 )
 
@@ -653,11 +663,11 @@ cp -L "$1" "{src_basename}"
             is_executable = True,
         )
 
-        stdlib_oleans = getattr(toolchain, "stdlib_oleans", [])
+        lib_lean_files = getattr(toolchain, "lib_lean_files", getattr(toolchain, "stdlib_oleans", []))
         ctx.actions.run(
             outputs = [main_olean, main_ilean, main_c],
             inputs = depset(
-                direct = [main_src, compile_wrapper] + list(stdlib_oleans),
+                direct = [main_src, compile_wrapper] + list(lib_lean_files),
                 transitive = all_oleans,
             ),
             executable = compile_wrapper,
@@ -969,9 +979,6 @@ _lean_stdlib_library = rule(
             mandatory = True,
             cfg = _stage0_transition,
             providers = [LeanInfo],
-        ),
-        "_allowlist_function_transition": attr.label(
-            default = "@bazel_tools//tools/allowlists/function_transition_allowlist",
         ),
     },
     provides = [DefaultInfo, LeanInfo],

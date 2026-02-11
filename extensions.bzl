@@ -81,23 +81,8 @@ load("@rules_cc//cc:defs.bzl", "cc_import", "cc_library")
 
 package(default_visibility = ["//visibility:public"])
 
-# Export the lean compiler binary
+# Export the lean compiler binaries
 exports_files(["bin/lean", "bin/leanc", "bin/lake"])
-
-sh_binary(
-    name = "lean",
-    srcs = ["bin/lean"],
-)
-
-sh_binary(
-    name = "leanc",
-    srcs = ["bin/leanc"],
-)
-
-sh_binary(
-    name = "lake",
-    srcs = ["bin/lake"],
-)
 
 # Export all stdlib olean files
 filegroup(
@@ -185,4 +170,20 @@ lean_release = repository_rule(
         ),
     },
     doc = "Downloads a pre-built Lean release.",
+)
+
+# Module extension for bzlmod
+def _lean_extension_impl(module_ctx):
+    for mod in module_ctx.modules:
+        for release in mod.tags.release:
+            lean_release(name = release.name, version = release.version)
+
+lean = module_extension(
+    implementation = _lean_extension_impl,
+    tag_classes = {
+        "release": tag_class(attrs = {
+            "name": attr.string(mandatory = True),
+            "version": attr.string(mandatory = True),
+        }),
+    },
 )

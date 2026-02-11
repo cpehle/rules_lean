@@ -11,8 +11,8 @@ package(default_visibility = ["//visibility:public"])
 # Single toolchain implementation with platform-specific linker flags via select()
 lean_toolchain(
     name = "lean_toolchain_impl",
-    lean = "@lean_release//:lean",
-    leanc = "@lean_release//:leanc",
+    lean = "@lean_release//:bin/lean",
+    leanc = "@lean_release//:bin/leanc",
     lean_headers = [
         "@lean_release//:include/lean/lean.h",
         "@lean_release//:include/lean/config.h",
@@ -22,7 +22,7 @@ lean_toolchain(
         "@lean_release//:include/lean/lean_libuv.h",
     ],
     stdlib_oleans = ["@lean_release//:stdlib_oleans"],
-    lib_lean_path = "external/lean_release/lib/lean",
+    lib_lean = "@lean_release//:lib_lean",
     runtime = "@lean_release//:leanrt",
     linker_flags = select({
         "@platforms//os:macos": ["-lc++"],

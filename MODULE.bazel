@@ -1,0 +1,15 @@
+module(name = "rules_lean", version = "0.1.0")
+
+bazel_dep(name = "rules_cc", version = "0.2.14")
+bazel_dep(name = "platforms", version = "1.0.0")
+
+register_toolchains(
+    "//toolchain:lean_toolchain_macos_arm64",
+    "//toolchain:lean_toolchain_macos_x86_64",
+    "//toolchain:lean_toolchain_linux_x86_64",
+    "//toolchain:lean_toolchain_linux_arm64",
+)
+
+lean = use_extension("//:extensions.bzl", "lean")
+lean.release(name = "lean_release", version = "4.26.0")
+use_repo(lean, "lean_release")
